@@ -1,0 +1,32 @@
+<FirstLogonCommands>
+    <SynchronousCommand>
+        <CommandLine>cmd.exe /c winrm quickconfig -q</CommandLine>
+        <Description>Enable WinRM</Description>
+        <Order>1</Order>
+    </SynchronousCommand>
+    <SynchronousCommand>
+        <CommandLine>cmd.exe /c winrm set winrm/config/service @{AllowUnencrypted="true"}</CommandLine>
+        <Description>Enable WinRM Unencrypted</Description>
+        <Order>2</Order>
+    </SynchronousCommand>
+    <SynchronousCommand>
+        <CommandLine>cmd.exe /c winrm set winrm/config/service/auth @{Basic="true"}</CommandLine>
+        <Description>Enable WinRM Basic Auth</Description>
+        <Order>3</Order>
+    </SynchronousCommand>
+    <SynchronousCommand>
+        <CommandLine>cmd.exe /c winrm set winrm/config/client/auth @{Basic="true"}</CommandLine>
+        <Description>Enable WinRM Basic Client Auth</Description>
+        <Order>4</Order>
+    </SynchronousCommand>
+    <SynchronousCommand>
+        <CommandLine>cmd.exe /c reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v EnableLUA /t REG_DWORD /d 0 /f</CommandLine>
+        <Description>Disable UAC</Description>
+        <Order>5</Order>
+    </SynchronousCommand>
+    <SynchronousCommand>
+        <CommandLine>cmd.exe /c netsh advfirewall firewall add rule name="WinRM 5985" protocol=TCP dir=in localport=5985 action=allow</CommandLine>
+        <Description>Open WinRM Port</Description>
+        <Order>6</Order>
+    </SynchronousCommand>
+</FirstLogonCommands> 

@@ -138,8 +138,21 @@ resource "azurerm_windows_virtual_machine" "vm_domain_controller" {
   admin_password        = var.vm_password
   computer_name         = "${var.prefix}-vm"
 
+  # Add these settings for WinRM
+  additional_unattend_content {
+    setting = "AutoLogon"
+    content = "<AutoLogon><Password><Value>${var.vm_password}</Value></Password><Enabled>true</Enabled><LogonCount>1</LogonCount><Username>${var.vm_username}</Username></AutoLogon>"
+  }
+
+  additional_unattend_content {
+    setting = "FirstLogonCommands"
+    content = file("${path.module}/files/FirstLogonCommands.xml")
+  }
+
+  # Make sure WinRM listener is configured
   winrm_listener {
-    protocol = "Http"
+    protocol        = "Http"
+    certificate_url = null
   }
 
   os_disk {
@@ -170,11 +183,18 @@ resource "azurerm_virtual_machine_extension" "create_active_directory_forest" {
   type                 = "CustomScriptExtension"
   type_handler_version = "1.10"
 
-  settings   = <<SETTINGS
-    {
-      "commandToExecute": "powershell -ExecutionPolicy Unrestricted -Command $is=[IO.MemoryStream]::New([System.Convert]::FromBase64String(\\\"${base64gzip(local.ad_script)}\\\")); $gs=[IO.Compression.GzipStream]::New($is, [IO.Compression.CompressionMode]::Decompress); $r=[IO.StreamReader]::New($gs, [System.Text.Encoding]::UTF8); Set-Content \\\"C:\\Windows\\Temp\\setup.ps1\\\" $r.ReadToEnd(); $r.Close(); .\\\"C:\\Windows\\Temp\\setup.ps1\\\" "
-}
-SETTINGS
+  settings = jsonencode({
+    commandToExecute = join(" ", [
+      "powershell -ExecutionPolicy Unrestricted -Command",
+      "$is=[IO.MemoryStream]::New([System.Convert]::FromBase64String(\\\"${base64gzip(local.ad_script)}\\\"));",
+      "$gs=[IO.Compression.GzipStream]::New($is, [IO.Compression.CompressionMode]::Decompress);",
+      "$r=[IO.StreamReader]::New($gs, [System.Text.Encoding]::UTF8);",
+      "Set-Content \\\"C:\\Windows\\Temp\\setup.ps1\\\" $r.ReadToEnd();",
+      "$r.Close();",
+      ".\\\"C:\\Windows\\Temp\\setup.ps1\\\";",
+      "if ($LASTEXITCODE -eq 3010) { Restart-Computer -Force }"
+    ])
+  })
   depends_on = [azurerm_windows_virtual_machine.vm_domain_controller]
 }
 
@@ -191,15 +211,15 @@ resource "azurerm_virtual_machine_extension" "deploy_open_ssh" {
 }
 
 resource "time_sleep" "wait_400_seconds" {
-  create_duration = "300s"
+  create_duration = "600s"
   depends_on      = [azurerm_virtual_machine_extension.deploy_open_ssh]
 }
 
 resource "null_resource" "update_user_attributes" {
   triggers = {
-    #always_run = timestamp()
     host_ip = azurerm_windows_virtual_machine.vm_domain_controller.public_ip_address
   }
+
   provisioner "remote-exec" {
     connection {
       type     = "winrm"
@@ -209,11 +229,23 @@ resource "null_resource" "update_user_attributes" {
       https    = false
       insecure = true
       port     = 5985
+      timeout  = "15m"
+      use_ntlm = false
     }
 
     inline = [
-      "powershell.exe -command \"${local.powershell_command}\" "
+      // Check AD DS Installation Status and wait for it to complete
+      "powershell.exe -command \"$retry = 0; do { $retry++; Start-Sleep -Seconds 30; try { $status = Get-Service -Name 'NTDS' -ErrorAction Stop; if ($status.Status -eq 'Running') { break } } catch { Write-Host 'Waiting for AD DS...' }; if ($retry -gt 20) { throw 'Timeout waiting for AD DS' } } while ($true)\"",
+      // Wait for AD Web Services to be running
+      "powershell.exe -command \"$retry = 0; do { $retry++; Start-Sleep -Seconds 30; try { $status = Get-Service -Name 'ADWS' -ErrorAction Stop; if ($status.Status -eq 'Running') { break } } catch { Write-Host 'Waiting for ADWS...' }; if ($retry -gt 20) { throw 'Timeout waiting for ADWS' } } while ($true)\"",
+      // Now try to set the user attributes
+      "powershell.exe -command \"${local.powershell_command}\""
     ]
   }
-  depends_on = [time_sleep.wait_400_seconds, azurerm_windows_virtual_machine.vm_domain_controller]
+
+  depends_on = [
+    time_sleep.wait_400_seconds,
+    azurerm_windows_virtual_machine.vm_domain_controller,
+    azurerm_virtual_machine_extension.create_active_directory_forest,
+  ]
 }
